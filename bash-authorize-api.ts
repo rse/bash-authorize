@@ -1,4 +1,4 @@
-/*!
+/*
 **  bash-authorize -- Claude Code "PreToolUse" hook for authorizing Bash commands
 **  Copyright (c) 2026 Dr. Ralf S. Engelschall <rse@engelschall.com>
 **  Distributed under MIT license <https://spdx.org/licenses/MIT.html>
