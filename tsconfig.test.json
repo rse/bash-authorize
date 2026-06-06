@@ -1,0 +1,12 @@
+{
+    "extends": "./tsconfig.app.json",
+    "compilerOptions": {
+        "types":           [ "node", "mocha" ],
+        "composite":       true,
+        "outDir":          "./dist/test",
+        "tsBuildInfoFile": "./dist/test/.tsbuildinfo",
+        "declaration":     true
+    },
+    "include": [ "bash-authorize.spec.ts" ],
+    "references": [ { "path": "./tsconfig.app.json" } ]
+}

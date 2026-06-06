@@ -1,0 +1,48 @@
+{
+    "name":                          "bash-authorize",
+    "homepage":                      "https://github.com/rse/bash-authorize",
+    "description":                   "Claude Code \"PreToolUse\" hook for auto-authorizing inert and gating dangerous Bash commands",
+    "keywords":                      [ "claude", "code", "hook", "pretooluse", "bash", "authorize", "permission", "cli" ],
+    "version":                       "0.9.0",
+    "license":                       "MIT",
+    "author": {
+        "name":                      "Dr. Ralf S. Engelschall",
+        "email":                     "rse@engelschall.com",
+        "url":                       "http://engelschall.com"
+    },
+    "repository":                    { "type": "git", "url":  "git+https://github.com/rse/bash-authorize.git" },
+    "bugs":                          { "url":  "http://github.com/rse/bash-authorize/issues" },
+    "bin": {
+        "bash-authorize":            "dist/bash-authorize-cli.js"
+    },
+    "type":                          "module",
+    "dependencies": {
+        "commander":                 "15.0.0",
+        "unbash":                    "3.0.0"
+    },
+    "devDependencies": {
+        "eslint":                    "9.39.4",
+        "@eslint/js":                "9.39.4",
+        "typescript-eslint":         "8.60.1",
+        "eslint-plugin-promise":     "7.3.0",
+        "eslint-plugin-import":      "2.32.0",
+        "neostandard":               "0.13.0",
+        "globals":                   "17.6.0",
+        "@types/node":               "25.9.2",
+        "typescript":                "6.0.3",
+        "mocha":                     "11.7.6",
+        "@types/mocha":              "10.0.10",
+        "tsx":                       "4.22.4"
+    },
+    "engines": {
+        "node":                      ">=24.0.0"
+    },
+    "scripts": {
+        "lint":                      "eslint --config eslint.mjs",
+        "build":                     "tsc --build tsconfig.app.json && chmod +x dist/bash-authorize-cli.js",
+        "test":                      "tsc --build tsconfig.test.json && mocha --config mocharc.json",
+        "prepublishOnly":            "npm run lint && npm run build && npm test",
+        "start":                     "node dist/bash-authorize-cli.js"
+    },
+    "files":                         [ "dist", "bash-authorize-api.ts", "bash-authorize-cli.ts" ]
+}
