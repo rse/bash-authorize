@@ -12,6 +12,7 @@ import { fileURLToPath }   from "node:url"
 
 /*  external dependencies  */
 import { Command, Option } from "commander"
+import { execa }           from "execa"
 
 /*  internal dependencies  */
 import { classifyBash }    from "./bash-authorize-api.js"
@@ -21,6 +22,11 @@ import type { Verdict }    from "./bash-authorize-api.js"
 const pkg = JSON.parse(readFileSync(
     fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as
     { name: string, version: string }
+
+/*  the absolute path of this plugin's root directory (the package root,
+    one level above the "dist" directory holding this compiled CLI), used
+    as the local marketplace source registered with Claude Code  */
+const pluginRoot = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "")
 
 /*  the shape of the JSON event Claude Code writes to a hook's stdin
     (only the fields this hook actually consumes are typed explicitly)  */
@@ -66,6 +72,10 @@ program
     .version(`${pkg.name} ${pkg.version}`, "-V, --version", "show program version information")
     .helpOption("-h, --help", "show this usage help")
     .addOption(new Option("-c, --command <command>", "classify this Bash command directly (instead of reading a hook event from stdin)"))
+    .addOption(new Option("-i, --install", "install this tool as a Claude Code plugin (into the chosen settings scope)"))
+    .addOption(new Option("-u, --uninstall", "uninstall this tool as a Claude Code plugin (from the chosen settings scope)"))
+    .addOption(new Option("-s, --scope <scope>", "settings scope to install into / uninstall from")
+        .choices([ "user", "project", "local" ]).default("user"))
     .addHelpText("after",
         "\n" +
         "Verdicts:\n" +
@@ -74,7 +84,18 @@ program
         "  deny         the command is catastrophic            -> block outright\n" +
         "  passthrough  nothing matched / classification gated -> defer to normal flow\n" +
         "\n" +
-        "Example (register as a Claude Code PreToolUse hook in settings.json):\n" +
+        "Settings scopes (for --install/--uninstall):\n" +
+        "  user         ~/.claude/settings.json                -> all projects of the user\n" +
+        "  project      ./.claude/settings.json                -> shared with the team (committed)\n" +
+        "  local        ./.claude/settings.local.json          -> only the local checkout (ignored)\n" +
+        "\n" +
+        "Example (install as a Claude Code plugin for the current user):\n" +
+        `  $ ${pkg.name} --install\n` +
+        "\n" +
+        "Example (uninstall the plugin again):\n" +
+        `  $ ${pkg.name} --uninstall\n` +
+        "\n" +
+        "Example (register manually as a Claude Code PreToolUse hook in settings.json):\n" +
         "  {\n" +
         "    \"hooks\": {\n" +
         "      \"PreToolUse\": [ {\n" +
@@ -91,7 +112,10 @@ program
     .parse()
 
 const opts = program.opts<{
-    command?: string
+    command?:   string
+    install?:   boolean
+    uninstall?: boolean
+    scope:      "user" | "project" | "local"
 }>()
 
 /*  classify a command string and emit the host-agent "hookSpecificOutput"
@@ -128,9 +152,63 @@ const report = (command: string): never => {
     process.exit(0)
 }
 
+/*  the marketplace and plugin names this tool registers under; Claude Code
+    addresses an enabled plugin as "<plugin>@<marketplace>", so both halves
+    have to agree with the names declared in the shipped manifest files
+    (.claude-plugin/marketplace.json and .claude-plugin/plugin.json)  */
+const marketplaceName = pkg.name
+const pluginName      = pkg.name
+const pluginRef       = `${pluginName}@${marketplaceName}`
+
+/*  run a "claude" CLI sub-process, streaming its output through to our own
+    stdout/stderr so the user sees the native progress, and turning a missing
+    "claude" binary or a non-zero exit into a fatal error for our caller  */
+const claude = async (args: string[]): Promise<void> => {
+    process.stdout.write(`${pkg.name}: $ claude ${args.join(" ")}\n`)
+    try {
+        await execa("claude", args, { stdio: "inherit" })
+    }
+    catch (err: unknown) {
+        const e = err as { code?: string, exitCode?: number }
+        if (e.code === "ENOENT")
+            fatal("the \"claude\" CLI was not found in $PATH -- install Claude Code first")
+        const code = typeof e.exitCode === "number" ? e.exitCode : -1
+        fatal(`"claude ${args.join(" ")}" failed (exit code: ${code})`)
+    }
+}
+
+/*  install this tool as a Claude Code plugin by registering this package's
+    root directory as a local marketplace and installing the plugin from it,
+    both via the native "claude plugin" sub-commands, then exit 0  */
+const install = async (scope: "user" | "project" | "local"): Promise<never> => {
+    await claude([ "plugin", "marketplace", "add", pluginRoot, "--scope", scope ])
+    await claude([ "plugin", "install", pluginRef, "--scope", scope ])
+    process.stdout.write(`${pkg.name}: installed plugin "${pluginRef}" (scope "${scope}")\n`)
+    process.exit(0)
+}
+
+/*  uninstall this tool as a Claude Code plugin by removing the plugin and
+    then dropping the local marketplace registration again, both via the
+    native "claude plugin" sub-commands, then exit 0  */
+const uninstall = async (scope: "user" | "project" | "local"): Promise<never> => {
+    await claude([ "plugin", "uninstall", pluginRef, "--scope", scope ])
+    await claude([ "plugin", "marketplace", "remove", marketplaceName, "--scope", scope ])
+    process.stdout.write(`${pkg.name}: uninstalled plugin "${pluginRef}" (scope "${scope}")\n`)
+    process.exit(0)
+}
+
 /*  main entry point: either classify a command supplied via "--command",
     or read and dispatch a Claude Code "PreToolUse" hook event from stdin  */
 async function main (): Promise<void> {
+    /*  install/uninstall mode: register or unregister this tool as a
+        Claude Code plugin via the native "claude plugin" sub-commands  */
+    if (opts.install && opts.uninstall)
+        fatal("the --install and --uninstall options are mutually exclusive")
+    if (opts.install)
+        await install(opts.scope)
+    if (opts.uninstall)
+        await uninstall(opts.scope)
+
     /*  direct mode: classify the command given on the command line and emit
         a human-readable "Label: Value" list  */
     if (opts.command !== undefined)

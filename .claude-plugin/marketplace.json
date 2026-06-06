@@ -1,0 +1,17 @@
+{
+    "name":                "bash-authorize",
+    "owner": {
+        "name":            "Dr. Ralf S. Engelschall",
+        "email":           "rse@engelschall.com"
+    },
+    "metadata": {
+        "description":     "Claude Code \"PreToolUse\" hook for authorizing Bash commands"
+    },
+    "plugins": [
+        {
+            "name":        "bash-authorize",
+            "source":      "./",
+            "description": "Claude Code \"PreToolUse\" hook for authorizing Bash commands"
+        }
+    ]
+}

@@ -46,9 +46,29 @@ the tool never crashes the host agent and never auto-approves on doubt.
 Installation
 ------------
 
+Install the CLI globally:
+
 ```
 $ npm install -g bash-authorize
 ```
+
+Then register it as a *Claude Code* plugin (this is the recommended way to
+hook it into *Claude Code* -- it drives the native `claude plugin` commands
+under the hood, so no manual `settings.json` editing is needed):
+
+```
+$ bash-authorize --install
+```
+
+To remove the plugin again:
+
+```
+$ bash-authorize --uninstall
+```
+
+Both honor a `--scope user|project|local` flag (defaulting to `user`),
+matching the installation scopes of *Claude Code*'s own `claude plugin`
+sub-commands.
 
 Usage
 -----
@@ -62,15 +82,32 @@ Options:
   -V, --version            show program version information
   -c, --command <command>  classify this Bash command directly (instead of
                            reading a hook event from stdin)
+  -i, --install            install this tool as a Claude Code plugin (into the
+                           chosen settings scope)
+  -u, --uninstall          uninstall this tool as a Claude Code plugin (from the
+                           chosen settings scope)
+  -s, --scope <scope>      settings scope to install into / uninstall from
+                           (choices: "user", "project", "local", default: "user")
   -h, --help               show this usage help
 
 Verdicts:
-  allow        the command is genuinely inert       -> auto-approve, no prompt
-  ask          the command is known-dangerous       -> force a user prompt
-  deny         the command is catastrophic          -> block outright
+  allow        the command is genuinely inert         -> auto-approve, no prompt
+  ask          the command is known-dangerous         -> force a user prompt
+  deny         the command is catastrophic            -> block outright
   passthrough  nothing matched / classification gated -> defer to normal flow
 
-Example (register as a Claude Code PreToolUse hook in settings.json):
+Settings scopes (for --install/--uninstall):
+  user         ~/.claude/settings.json                -> all projects of the user
+  project      ./.claude/settings.json                -> shared with the team (committed)
+  local        ./.claude/settings.local.json          -> only the local checkout (ignored)
+
+Example (install as a Claude Code plugin for the current user):
+  $ bash-authorize --install
+
+Example (uninstall the plugin again):
+  $ bash-authorize --uninstall
+
+Example (register manually as a Claude Code PreToolUse hook in settings.json):
   {
     "hooks": {
       "PreToolUse": [ {
@@ -83,6 +120,43 @@ Example (register as a Claude Code PreToolUse hook in settings.json):
 Example (classify a command directly from the shell):
   $ bash-authorize --command "rm -rf /"
 ```
+
+Claude Code Plugin
+------------------
+
+Besides being a standalone CLI, this package *is* a self-contained *Claude
+Code* plugin. Its plugin manifest lives under `.claude-plugin/` and a
+conventional `hooks/hooks.json` wires the bundled CLI into the `PreToolUse`
+event for the `Bash` tool:
+
+```
+.claude-plugin/marketplace.json   local-directory marketplace descriptor
+.claude-plugin/plugin.json        plugin manifest (name, version, author, ...)
+hooks/hooks.json                  PreToolUse/Bash hook -> bundled CLI
+```
+
+The hook invokes the plugin's *own* bundled binary via the
+`${CLAUDE_PLUGIN_ROOT}` variable *Claude Code* exposes to plugin hooks, so it
+works regardless of whether `bash-authorize` is also on your `$PATH`:
+
+```json
+{
+    "hooks": {
+        "PreToolUse": [ {
+            "matcher": "Bash",
+            "hooks": [ {
+                "type": "command",
+                "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/bash-authorize-cli.js\""
+            } ]
+        } ]
+    }
+}
+```
+
+Running `bash-authorize --install` registers this package's directory as a
+local *Claude Code* plugin marketplace and installs the plugin from it, both
+via the native `claude plugin marketplace add` and `claude plugin install`
+sub-commands; `--uninstall` reverses both steps again.
 
 How It Works
 ------------
