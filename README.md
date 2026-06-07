@@ -43,6 +43,11 @@ The classification is *fail-safe* throughout: any parse error, thrown
 exception, or unexpected/unmatched construct yields `passthrough`, so
 the tool never crashes the host agent and never auto-approves on doubt.
 
+> [!CAUTION]
+> THIS IS A SECURITY-RELEVANT AND RISKY PIECE OF SOFTWARE. IT IS
+> PROVIDED AS-IS, JUST FOR YOUR CONVENIENCE, AND WITHOUT ANY GUARANTEE
+> THAT IT WORKS CORRECTLY AT ALL. USE IT ENTIRELY AT YOUR OWN RISK!
+
 Installation
 ------------
 
