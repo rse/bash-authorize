@@ -167,6 +167,42 @@ const sedArgsAreSafe = (args: string[]): boolean => {
     return scripts.every((s) => sedScriptText(s))
 }
 
+/*  validate a "uniq" argument vector: "uniq" is read-only EXCEPT that its
+    grammar is "uniq [OPTION]... [INPUT [OUTPUT]]", i.e. a *second* non-flag
+    positional is an output FILE that uniq writes (a side effect). This guard
+    allows at most one non-flag positional (the input file) and rejects a
+    second. Short options that take a separate numeric value ("-f"/"-s"/"-w"
+    in their non-glued form) consume the following token so it is not
+    mis-counted as the output positional; long "--opt=value" forms and glued
+    short forms ("-f2") carry their own value and consume nothing extra. A
+    "--" terminator ends option processing. Any unrecognized separated-value
+    shape simply errs toward counting positionals and thus toward rejection
+    (-> "passthrough"), never toward mis-approval.  */
+const UNIQ_VALUE_FLAGS = new Set([ "-f", "-s", "-w" ])
+const uniqArgsAreSafe = (args: string[]): boolean => {
+    let positionals = 0
+    let endOpts = false
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i]
+        if (!endOpts && arg === "--") {
+            endOpts = true
+            continue
+        }
+        if (!endOpts && UNIQ_VALUE_FLAGS.has(arg)) {
+            /*  separated value: skip the following numeric operand  */
+            i++
+            continue
+        }
+        if (!endOpts && arg.startsWith("-") && arg.length > 1)
+            /*  any other flag (glued value, long form, bundle) is inert  */
+            continue
+        positionals++
+        if (positionals > 1)
+            return false
+    }
+    return true
+}
+
 /*  the ordered rule set: first match wins. "allow" rules enumerate a
     conservative, genuinely-inert command set; "risk" rules enumerate the
     known-dangerous ones (mostly "ask", with only a tiny catastrophic set
@@ -202,6 +238,20 @@ const RULES: Rule[] = [
         reason: "counting is read-only" },
     {   permission: "allow", cmd: "which",
         reason: "executable lookup is read-only" },
+    {   permission: "allow", cmd: "basename",
+        reason: "path-string manipulation is read-only" },
+    {   permission: "allow", cmd: "dirname",
+        reason: "path-string manipulation is read-only" },
+    {   permission: "allow", cmd: "realpath",
+        reason: "path resolution is read-only" },
+    {   permission: "allow", cmd: "readlink",
+        reason: "symlink read is read-only" },
+    {   permission: "allow", cmd: "tr",
+        reason: "character translation reads stdin and writes stdout only" },
+    {   permission: "allow", cmd: "cut",
+        reason: "field selection is read-only" },
+    {   permission: "allow", cmd: "uniq", argGuard: uniqArgsAreSafe,
+        reason: "duplicate filtering is read-only when given no output-file operand" },
     {   permission: "allow", cmd: "grep",
         denyFlags: [ "-o", "--output", "-r", "-R" ],
         reason: "pattern search is read-only" },
@@ -364,6 +414,19 @@ const partHasScript = (part: WordPart): boolean =>
     || part.type === "ProcessSubstitution"
     || part.type === "ArithmeticExpansion"
 
+/*  whether a word part is a plain command substitution ("$(...)" or the
+    backtick form) -- the one substitution kind whose inner script can be
+    recursively classified and, if itself genuinely-inert ("allow"), let
+    the carrying word stay auto-approvable instead of tripping the gate.
+    Process substitution ("<(...)"/">(...)") and arithmetic command
+    substitution are deliberately excluded and keep gating unconditionally:
+    they are rarer, carry extra side-effect surface (an fd/pipe is opened, a
+    sub-process is wired up), and are not needed for the common read-only
+    idioms ("x=$(basename ...)", "cmd $(sed ... | grep ...)") this relaxation
+    targets.  */
+const isPlainCommandExpansion = (part: WordPart): boolean =>
+    part.type === "CommandExpansion"
+
 /*  the inert sink paths a write redirect may target without mutating the
     filesystem (so "cmd >/dev/null" stays as harmless as "cmd" itself)  */
 const INERT_SINKS = new Set([ "/dev/null", "/dev/stdout", "/dev/stderr" ])
@@ -427,6 +490,24 @@ class Walker {
         this.state.gated = true
     }
 
+    /*  recursively classify a plain command substitution's inner script with
+        a *fresh* Walker, fold its aggregate decision into this walk under the
+        usual safety-first precedence, and report whether the carrying word
+        must still gate. The substitution gates UNLESS its inner script is
+        itself genuinely-inert ("allow"): so "$(basename ...)" and
+        "$(sed ... | grep ...)" no longer block auto-approval, while
+        "$(curl ...)" folds in "ask" (and gates), "$(rm -rf /)" folds in
+        "deny" (and gates), and an inner unmatched/gated script stays
+        "passthrough" (and gates). The inner script is classified with a
+        fresh Walker so the inner hard gates do not leak out as the outer
+        walk's own gate -- only a non-"allow" inner *verdict* propagates the
+        gate, which is exactly the auto-approval condition.  */
+    private subScriptGates (script: Script): boolean {
+        const inner = new Walker().classify(script)
+        this.add(inner)
+        return inner.verdict !== "allow"
+    }
+
     /*  fold a leaf decision into the running aggregate, keeping the reason
         of whichever verdict currently dominates under safety-first precedence  */
     private add (decision: Decision): void {
@@ -451,52 +532,78 @@ class Walker {
     }
 
     /*  walk a single word, descending into every nested Script embedded in
-        its parts (command/process/arithmetic substitution); a word carrying
-        any such substitution is also a hard gate (never auto-approvable)  */
-    private walkWord (word: Word): void {
+        its parts (command/process/arithmetic substitution). A plain command
+        substitution ("$(...)") gates only when its inner script is not itself
+        genuinely-inert (see "subScriptGates"); a process or arithmetic
+        substitution always gates (never auto-approvable). The return value
+        reports whether this word carried any still-gating part, so callers
+        that additionally vet a word's literalness (assignment prefixes,
+        parameter-expansion operands) can gate precisely on that rather than
+        on a now-cleared inert substitution.  */
+    private walkWord (word: Word): boolean {
         if (word.parts === undefined)
-            return
+            return false
+        let gated = false
         for (const part of word.parts) {
-            if (partHasScript(part))
+            if (isPlainCommandExpansion(part)) {
+                if (part.type === "CommandExpansion" && part.script !== undefined) {
+                    if (this.subScriptGates(part.script)) {
+                        this.gate()
+                        gated = true
+                    }
+                }
+                else {
+                    /*  a command substitution without a parsed inner script
+                        cannot be vetted -> fail safe and gate  */
+                    this.gate()
+                    gated = true
+                }
+                continue
+            }
+            if (partHasScript(part)) {
                 this.gate()
-            if (part.type === "CommandExpansion" && part.script !== undefined)
-                this.walkScript(part.script)
-            else if (part.type === "ProcessSubstitution" && part.script !== undefined)
+                gated = true
+            }
+            if (part.type === "ProcessSubstitution" && part.script !== undefined)
                 this.walkScript(part.script)
             else if (part.type === "ArithmeticExpansion" && part.expression !== undefined)
                 this.walkArithmetic(part.expression)
             else if (part.type === "ParameterExpansion") {
                 /*  a parameter expansion may embed a substitution in its
                     default/alternate operand or its replace pattern, each a
-                    nested word that must be walked and gated as well  */
-                if (part.operand !== undefined) {
-                    if (!isLiteralWord(part.operand))
-                        this.gate()
-                    this.walkWord(part.operand)
-                }
+                    nested word that is itself walked: an inert command
+                    substitution there no longer gates, while any still-gating
+                    nested part propagates the gate via walkWord's result  */
+                if (part.operand !== undefined)
+                    gated = this.walkWord(part.operand) || gated
                 if (part.replace !== undefined) {
-                    if (!isLiteralWord(part.replace.replacement))
-                        this.gate()
-                    this.walkWord(part.replace.pattern)
-                    this.walkWord(part.replace.replacement)
+                    gated = this.walkWord(part.replace.pattern) || gated
+                    gated = this.walkWord(part.replace.replacement) || gated
                 }
                 if (part.slice !== undefined) {
-                    this.walkWord(part.slice.offset)
+                    gated = this.walkWord(part.slice.offset) || gated
                     if (part.slice.length !== undefined)
-                        this.walkWord(part.slice.length)
+                        gated = this.walkWord(part.slice.length) || gated
                 }
             }
             else if (part.type === "DoubleQuoted" || part.type === "LocaleString")
                 for (const child of part.parts)
                     if (child.type === "CommandExpansion" && child.script !== undefined) {
-                        this.gate()
-                        this.walkScript(child.script)
+                        /*  a command substitution inside a double-quoted word
+                            ("...$(cmd)...") gates only when its inner script
+                            is not itself genuinely-inert  */
+                        if (this.subScriptGates(child.script)) {
+                            this.gate()
+                            gated = true
+                        }
                     }
                     else if (child.type === "ArithmeticExpansion" && child.expression !== undefined) {
                         this.gate()
+                        gated = true
                         this.walkArithmetic(child.expression)
                     }
         }
+        return gated
     }
 
     /*  walk an arithmetic expression, descending into any embedded command
@@ -531,20 +638,17 @@ class Walker {
         }
     }
 
-    /*  walk a risky assignment prefix ("FOO=$(cmd) cmd"): a prefix that
-        assigns a substituted value is a hard gate and is itself traversed  */
+    /*  walk an assignment prefix ("FOO=$(cmd) cmd"): the assigned value (or
+        each array element) is walked, and gates only when it carries a
+        still-gating part. An inert command substitution ("FOO=$(basename x)")
+        no longer gates, while a non-inert one ("FOO=$(id)") does -- walkWord
+        reports which via its return value.  */
     private walkPrefix (prefix: AssignmentPrefix): void {
-        if (prefix.value !== undefined) {
-            if (!isLiteralWord(prefix.value))
-                this.gate()
+        if (prefix.value !== undefined)
             this.walkWord(prefix.value)
-        }
         if (prefix.array !== undefined)
-            for (const word of prefix.array) {
-                if (!isLiteralWord(word))
-                    this.gate()
+            for (const word of prefix.array)
                 this.walkWord(word)
-            }
     }
 
     /*  classify a leaf "Command" node: unwrap transparent wrappers and

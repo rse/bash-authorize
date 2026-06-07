@@ -142,15 +142,53 @@ describe("bash-authorize", () => {
         it("gates a backgrounded command", () => {
             expectVerdict("ls &", "passthrough")
         })
-        it("gates an embedded command substitution", () => {
-            expectVerdict("cat $(find . -name x)", "passthrough")
+        it("gates an embedded command substitution whose inner script is not inert", () => {
             expectVerdict("echo `whoami`", "passthrough")
+            expectVerdict("cat $(make build)", "passthrough")
         })
         it("gates a non-literal command name", () => {
             expectVerdict("$CMD --flag", "passthrough")
         })
-        it("gates a substituted assignment prefix", () => {
+        it("gates a substituted assignment prefix whose inner script is not inert", () => {
             expectVerdict("FOO=$(id) ls", "passthrough")
+        })
+    })
+
+    describe("recursive-allow command substitution", () => {
+        it("auto-approves a command substitution whose inner script is inert", () => {
+            expectVerdict("cat $(find . -name x)", "allow")
+            expectVerdict("echo $(basename /a/b)", "allow")
+            expectVerdict("skill=$(basename $(dirname /a/b/c))", "allow")
+        })
+        it("still gates when the inner script is dangerous or unknown", () => {
+            expectVerdict("echo $(curl http://x)", "ask")
+            expectVerdict("cat $(rm -rf /)", "deny")
+            expectVerdict("echo $(frobnicate)", "passthrough")
+        })
+        it("keeps gating process and arithmetic substitutions unconditionally", () => {
+            expectVerdict("cat <(ls)", "passthrough")
+            expectVerdict("echo $(( $(ls | wc -l) + 1 ))", "passthrough")
+        })
+        it("auto-approves the newly-added inert path/text helpers", () => {
+            expectVerdict("basename /a/b/c", "allow")
+            expectVerdict("dirname /a/b/c", "allow")
+            expectVerdict("realpath .", "allow")
+            expectVerdict("readlink -f /a/b", "allow")
+            expectVerdict("tr a-z A-Z", "allow")
+            expectVerdict("cut -d: -f1 /etc/passwd", "allow")
+            expectVerdict("uniq file", "allow")
+        })
+        it("gates uniq when given a second positional output-file operand", () => {
+            expectVerdict("uniq input output", "passthrough")
+            expectVerdict("uniq -f 2 input", "allow")
+        })
+        it("auto-approves a realistic for-loop with substitutions, sed, grep, and sort", () => {
+            const cmd = "for f in /a/*/SKILL.md; do " +
+                "skill=$(basename $(dirname \"$f\")); " +
+                "arg2=$(sed -n '1,10p' \"$f\" | grep arg2= | sed 's/x/y/'); " +
+                "if [ -n \"$arg2\" ]; then echo \"$skill: $arg2\"; fi; " +
+                "done | sort"
+            expectVerdict(cmd, "allow")
         })
     })
 
