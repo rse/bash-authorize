@@ -189,9 +189,9 @@ command and responds via `stdout`:
   letting *Claude Code* apply its normal permission flow.
 
 For testing and scripting, the `--command` option bypasses the stdin
-hook protocol and classifies a command string directly (still emitting
-the same JSON, or nothing for `passthrough`). Combine it with
-`--verbose` to see the resolved verdict and reason on `stderr`.
+hook protocol and classifies a command string directly, printing the
+resolved verdict and reason in a human-readable form to `stdout` (for
+all verdicts, including `passthrough`).
 
 License
 -------
