@@ -192,6 +192,46 @@ describe("bash-authorize", () => {
         })
     })
 
+    describe("the \".env\" secrets-file deny gate", () => {
+        it("denies reading a \".env\" file by any inert command", () => {
+            expectVerdict("cat .env", "deny")
+            expectVerdict("cat ./.env", "deny")
+            expectVerdict("cat config/.env", "deny")
+            expectVerdict("cat /home/x/.env", "deny")
+            expectVerdict("head -5 .env", "deny")
+            expectVerdict("tail .env", "deny")
+            expectVerdict("grep SECRET .env", "deny")
+        })
+        it("denies even a command that would otherwise be passthrough", () => {
+            expectVerdict("source .env", "deny")
+            expectVerdict("frobnicate .env", "deny")
+        })
+        it("denies a redirect whose target is a \".env\" file", () => {
+            expectVerdict("cat < .env", "deny")
+            expectVerdict("grep x file < .env", "deny")
+        })
+        it("denies through transparent wrappers and privilege escalators", () => {
+            expectVerdict("xargs cat .env", "deny")
+            expectVerdict("sudo cat .env", "deny")
+            expectVerdict("env FOO=bar cat .env", "deny")
+        })
+        it("denies when a \".env\" reference appears anywhere in a list or pipeline", () => {
+            expectVerdict("ls && cat .env", "deny")
+            expectVerdict("cat .env | grep KEY", "deny")
+        })
+        it("does NOT deny sibling names that merely share the prefix/suffix", () => {
+            expectVerdict("cat .env.example", "allow")
+            expectVerdict("cat .env.local", "allow")
+            expectVerdict("cat .envrc", "allow")
+            expectVerdict("cat environment", "allow")
+            expectVerdict("cat my.env.txt", "allow")
+        })
+        it("reports the \".env\" deny reason", () => {
+            assert.deepEqual(classifyBash("cat .env"),
+                { verdict: "deny", reason: "reference to a \".env\" secrets file is blocked" })
+        })
+    })
+
     describe("transparent wrappers", () => {
         it("unwraps to the inner command and classifies that", () => {
             expectVerdict("env FOO=bar ls", "allow")
