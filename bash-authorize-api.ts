@@ -862,11 +862,8 @@ class Walker {
         }
     }
 
-    /*  walk a "Statement": background "&" and statement-level redirects are
-        hard gates, then descend into the wrapped command node  */
+    /*  walk a "Statement"  */
     private walkStatement (statement: Statement): void {
-        if (statement.background === true)
-            this.gate()
         for (const redirect of statement.redirects)
             this.walkRedirect(redirect)
         this.walkNode(statement.command)
