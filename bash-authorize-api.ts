@@ -282,6 +282,14 @@ const RULES: Rule[] = [
         reason: "git branch listing is read-only" },
     {   permission: "allow", cmd: "git", subcommands: [ "show" ],
         reason: "git show is read-only" },
+    {   permission: "allow", cmd: "wait",
+        reason: "wait just waits on processes/jobs" },
+    {   permission: "allow", cmd: "npm", subcommands: [ "view" ],
+        reason: "npm view is read-only" },
+    {   permission: "allow", cmd: "npm", subcommands: [ "show" ],
+        reason: "npm show is read-only" },
+    {   permission: "allow", cmd: "npm", subcommands: [ "ls" ],
+        reason: "npm ls is read-only" },
 
     /*  known-dangerous operations -> actively ask  */
     {   permission: "ask",   cmd: "rm", flags: [ "-r", "-f" ],
