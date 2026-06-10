@@ -139,9 +139,6 @@ describe("bash-authorize", () => {
             expectVerdict("ls > /dev/null", "allow")
             expectVerdict("grep x file 2>/dev/null", "allow")
         })
-        it("gates a backgrounded command", () => {
-            expectVerdict("ls &", "passthrough")
-        })
         it("gates an embedded command substitution whose inner script is not inert", () => {
             expectVerdict("echo `whoami`", "passthrough")
             expectVerdict("cat $(make build)", "passthrough")
@@ -155,6 +152,9 @@ describe("bash-authorize", () => {
     })
 
     describe("recursive-allow command substitution", () => {
+        it("allow backgrounded command", () => {
+            expectVerdict("ls &", "allow")
+        })
         it("auto-approves a command substitution whose inner script is inert", () => {
             expectVerdict("cat $(find . -name x)", "allow")
             expectVerdict("echo $(basename /a/b)", "allow")
