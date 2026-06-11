@@ -325,6 +325,8 @@ const RULES: Rule[] = [
         reason: "npm show is read-only" },
     {   permission: "allow", cmd: "npm", subcommands: [ "ls" ],
         reason: "npm ls is read-only" },
+    {   permission: "allow", cmd: "npm", subcommands: [ "search" ],
+        reason: "npm search is read-only" },
     {   permission: "allow", cmd: "curl",
         denyFlags: [ "-o", "-O", "-J", "-D", "-c", "-K" ],
         denyArgSubstr: [
