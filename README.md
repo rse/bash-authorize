@@ -23,11 +23,12 @@ full command structure, and classifies it into one of four verdicts:
 
 - **allow** &mdash; the command is *genuinely inert* (read-only, no
   side-effects), so it is *auto-approved* without prompting the user
-  (e.g. `ls`, `cat`, `grep`, `git status`).
+  (e.g. `ls`, `cat`, `grep`, `git status`, or `curl`/`wget` as long
+  as they stream to stdout and do not write any file).
 
 - **ask** &mdash; the command is *known-dangerous* but legitimate, so a
   user confirmation *prompt is forced* (e.g. `rm -rf`, `git push`,
-  `chmod`, `curl`).
+  `chmod`).
 
 - **deny** &mdash; the command is *catastrophic* and near-never
   legitimate, so it is *blocked outright* (e.g. `rm -rf /`, `mkfs.*`,

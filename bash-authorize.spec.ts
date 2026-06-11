@@ -30,7 +30,7 @@ describe("bash-authorize", () => {
         it("forces a prompt on a known-dangerous command as \"ask\"", () => {
             expectVerdict("rm -rf build", "ask")
             expectVerdict("chmod 777 file", "ask")
-            expectVerdict("curl https://example.com", "ask")
+            expectVerdict("kill -9 1234", "ask")
         })
         it("blocks a catastrophic command outright as \"deny\"", () => {
             expectVerdict("rm -rf /", "deny")
@@ -92,6 +92,36 @@ describe("bash-authorize", () => {
             expectVerdict("awk '{ print $1 }' file", "allow")
             expectVerdict("awk 'BEGIN { system(\"rm x\") }'", "passthrough")
             expectVerdict("awk '{ print > \"out\" }' file", "passthrough")
+        })
+        describe("the curl/wget no-file-output rules", () => {
+            it("auto-approves curl when it streams to stdout only", () => {
+                expectVerdict("curl https://example.com", "allow")
+                expectVerdict("curl -fsSL https://example.com/x", "allow")
+                expectVerdict("curl -H 'Accept: application/json' https://api.example.com", "allow")
+            })
+            it("downgrades curl when it would write a file", () => {
+                expectVerdict("curl -o out.html https://example.com", "passthrough")
+                expectVerdict("curl -O https://example.com/file.tgz", "passthrough")
+                expectVerdict("curl --output out https://example.com", "passthrough")
+                expectVerdict("curl --output=out https://example.com", "passthrough")
+                expectVerdict("curl -sSL -D headers.txt https://example.com", "passthrough")
+                expectVerdict("curl https://example.com > out.html", "passthrough")
+            })
+            it("auto-approves wget only with an explicit stdout output document", () => {
+                expectVerdict("wget -O - https://example.com", "allow")
+                expectVerdict("wget -qO- https://example.com", "allow")
+                expectVerdict("wget --output-document=- https://example.com", "allow")
+                expectVerdict("wget --output-document - https://example.com", "allow")
+            })
+            it("downgrades wget when it would write a file (its default)", () => {
+                expectVerdict("wget https://example.com", "passthrough")
+                expectVerdict("wget -q https://example.com", "passthrough")
+                expectVerdict("wget -O file https://example.com", "passthrough")
+                expectVerdict("wget -qO file https://example.com", "passthrough")
+                expectVerdict("wget -r -O - https://example.com", "passthrough")
+                expectVerdict("wget -e output_document=x https://example.com", "passthrough")
+                expectVerdict("wget -O - https://example.com > out.html", "passthrough")
+            })
         })
         describe("the sed argGuard", () => {
             it("allows a verified-safe inert sed script", () => {
@@ -161,7 +191,7 @@ describe("bash-authorize", () => {
             expectVerdict("skill=$(basename $(dirname /a/b/c))", "allow")
         })
         it("still gates when the inner script is dangerous or unknown", () => {
-            expectVerdict("echo $(curl http://x)", "ask")
+            expectVerdict("echo $(chmod 777 x)", "ask")
             expectVerdict("cat $(rm -rf /)", "deny")
             expectVerdict("echo $(frobnicate)", "passthrough")
         })

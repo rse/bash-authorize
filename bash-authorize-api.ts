@@ -203,6 +203,41 @@ const uniqArgsAreSafe = (args: string[]): boolean => {
     return true
 }
 
+/*  validate a "wget" argument vector: unlike "curl", wget's DEFAULT is to
+    save the fetched document to a local file, so a wget leaf is only inert
+    when an explicit "-O -"/"--output-document=-" redirects the document to
+    stdout. This guard hunts for exactly that option (in its separated,
+    glued, and short-bundle forms such as "-qO-") and requires its value to
+    be the literal "-": any other value (a real output file) rejects, and
+    so does the option's complete absence (the implicit save-to-file
+    default). The other file-writing options ("-o" log files, "-r"
+    recursive downloads, "-e" wgetrc overrides, etc.) are already denied
+    upstream via "denyFlags"/"denyArgSubstr" before this guard runs.  */
+const wgetArgsAreSafe = (args: string[]): boolean => {
+    let stdout = false
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i]
+        const bundle = /^-[a-zA-Z]*O(.*)$/.exec(arg)
+        if (bundle !== null) {
+            /*  short "-O", possibly trailing a bundle ("-qO"), with its
+                value either glued ("-qO-") or in the following token  */
+            const value = bundle[1] !== "" ? bundle[1] : (++i < args.length ? args[i] : "")
+            if (value !== "-")
+                return false
+            stdout = true
+        }
+        else if (arg === "--output-document" || arg.startsWith("--output-document=")) {
+            const value = arg.startsWith("--output-document=") ?
+                arg.slice("--output-document=".length) :
+                (++i < args.length ? args[i] : "")
+            if (value !== "-")
+                return false
+            stdout = true
+        }
+    }
+    return stdout
+}
+
 /*  the ordered rule set: first match wins. "allow" rules enumerate a
     conservative, genuinely-inert command set; "risk" rules enumerate the
     known-dangerous ones (mostly "ask", with only a tiny catastrophic set
@@ -290,6 +325,23 @@ const RULES: Rule[] = [
         reason: "npm show is read-only" },
     {   permission: "allow", cmd: "npm", subcommands: [ "ls" ],
         reason: "npm ls is read-only" },
+    {   permission: "allow", cmd: "curl",
+        denyFlags: [ "-o", "-O", "-J", "-D", "-c", "-K" ],
+        denyArgSubstr: [
+            "--output", "--remote-name", "--remote-header-name", "--dump-header",
+            "--cookie-jar", "--trace", "--stderr", "--etag-save", "--libcurl",
+            "--config", "--create-dirs", "%output{" ],
+        reason: "curl without a file-writing option streams to stdout only" },
+    {   permission: "allow", cmd: "wget",
+        denyFlags: [ "-o", "-a", "-r", "-m", "-x", "-N", "-c", "-k", "-K", "-p", "-P", "-E", "-e" ],
+        denyArgSubstr: [
+            "--output-file", "--append-output", "--execute", "--recursive",
+            "--mirror", "--page-requisites", "--timestamping", "--continue",
+            "--convert-links", "--backup-converted", "--force-directories",
+            "--directory-prefix", "--adjust-extension", "--save-cookies",
+            "--warc-file", "--config" ],
+        argGuard: wgetArgsAreSafe,
+        reason: "wget with an explicit stdout output document writes no files" },
 
     /*  known-dangerous operations -> actively ask  */
     {   permission: "ask",   cmd: "rm", flags: [ "-r", "-f" ],
@@ -302,11 +354,7 @@ const RULES: Rule[] = [
     {   permission: "ask",   cmd: "chown",
         reason: "ownership change is mutating" },
     {   permission: "ask",   cmd: "kill",
-        reason: "signalling processes is impactful" },
-    {   permission: "ask",   cmd: "curl",
-        reason: "network access is side-effecting" },
-    {   permission: "ask",   cmd: "wget",
-        reason: "network access is side-effecting" }
+        reason: "signalling processes is impactful" }
 ]
 
 /*  normalize a leaf command's argument flags into a set of canonical flag
@@ -538,7 +586,7 @@ class Walker {
         must still gate. The substitution gates UNLESS its inner script is
         itself genuinely-inert ("allow"): so "$(basename ...)" and
         "$(sed ... | grep ...)" no longer block auto-approval, while
-        "$(curl ...)" folds in "ask" (and gates), "$(rm -rf /)" folds in
+        "$(chmod ...)" folds in "ask" (and gates), "$(rm -rf /)" folds in
         "deny" (and gates), and an inner unmatched/gated script stays
         "passthrough" (and gates). The inner script is classified with a
         fresh Walker so the inner hard gates do not leak out as the outer
