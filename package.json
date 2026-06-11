@@ -3,7 +3,7 @@
     "homepage":                      "https://github.com/rse/bash-authorize",
     "description":                   "Claude Code \"PreToolUse\" hook for auto-authorizing inert and gating dangerous Bash commands",
     "keywords":                      [ "claude", "code", "hook", "pretooluse", "bash", "authorize", "permission", "cli" ],
-    "version":                       "0.9.4",
+    "version":                       "0.9.5",
     "license":                       "MIT",
     "author": {
         "name":                      "Dr. Ralf S. Engelschall",
