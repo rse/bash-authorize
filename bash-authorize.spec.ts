@@ -212,6 +212,11 @@ describe("bash-authorize", () => {
             expectVerdict("uniq input output", "passthrough")
             expectVerdict("uniq -f 2 input", "allow")
         })
+        it("auto-approves a grep whose pattern is an inert printf substitution", () => {
+            expectVerdict("printf '\\t'", "allow")
+            expectVerdict("grep -n \"$(printf '\\t')\" SKILL.md", "allow")
+            expectVerdict("grep -nE \" +$\" SKILL.md; grep -n \"$(printf '\\t')\" SKILL.md; echo \"done\"", "allow")
+        })
         it("auto-approves a realistic for-loop with substitutions, sed, grep, and sort", () => {
             const cmd = "for f in /a/*/SKILL.md; do " +
                 "skill=$(basename $(dirname \"$f\")); " +
@@ -222,7 +227,7 @@ describe("bash-authorize", () => {
         })
     })
 
-    describe("the \".env\" secrets-file deny gate", () => {
+    describe("the secrets-file deny gate", () => {
         it("denies reading a \".env\" file by any inert command", () => {
             expectVerdict("cat .env", "deny")
             expectVerdict("cat ./.env", "deny")
@@ -231,6 +236,24 @@ describe("bash-authorize", () => {
             expectVerdict("head -5 .env", "deny")
             expectVerdict("tail .env", "deny")
             expectVerdict("grep SECRET .env", "deny")
+        })
+        it("denies a \".env\" reference case-insensitively (APFS/NTFS)", () => {
+            expectVerdict("cat .ENV", "deny")
+            expectVerdict("cat .Env", "deny")
+            expectVerdict("cat config/.ENV", "deny")
+        })
+        it("denies the other conventional secret-carrying files", () => {
+            expectVerdict("cat ~/.netrc", "deny")
+            expectVerdict("cat .npmrc", "deny")
+            expectVerdict("cat ~/.aws/credentials", "deny")
+            expectVerdict("cat ~/.ssh/id_rsa", "deny")
+            expectVerdict("cat id_ed25519", "deny")
+            expectVerdict("grep token ~/.npmrc", "deny")
+        })
+        it("does NOT deny the public SSH key siblings or lookalike names", () => {
+            expectVerdict("cat ~/.ssh/id_rsa.pub", "allow")
+            expectVerdict("cat credentials.json", "allow")
+            expectVerdict("cat my-credentials-doc.md", "allow")
         })
         it("denies even a command that would otherwise be passthrough", () => {
             expectVerdict("source .env", "deny")
@@ -256,7 +279,7 @@ describe("bash-authorize", () => {
             expectVerdict("cat environment", "allow")
             expectVerdict("cat my.env.txt", "allow")
         })
-        it("reports the \".env\" deny reason", () => {
+        it("reports the secrets-file deny reason with the matched basename", () => {
             assert.deepEqual(classifyBash("cat .env"),
                 { verdict: "deny", reason: "reference to a \".env\" secrets file is blocked" })
         })

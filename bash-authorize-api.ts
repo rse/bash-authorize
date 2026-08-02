@@ -263,6 +263,8 @@ const RULES: Rule[] = [
         reason: "print working directory is read-only" },
     {   permission: "allow", cmd: "echo",
         reason: "echo is inert" },
+    {   permission: "allow", cmd: "printf",
+        reason: "printf formats to stdout only" },
     {   permission: "allow", cmd: "cat",
         reason: "file read is non-mutating" },
     {   permission: "allow", cmd: "head",
@@ -489,39 +491,61 @@ const isPlainCommandExpansion = (part: WordPart): boolean =>
     filesystem (so "cmd >/dev/null" stays as harmless as "cmd" itself)  */
 const INERT_SINKS = new Set([ "/dev/null", "/dev/stdout", "/dev/stderr" ])
 
-/*  the catastrophic "deny" decision emitted for any reference to a ".env"
-    file: such files conventionally carry secrets (API keys, passwords,
-    tokens), so reading or even referencing one is blocked outright rather
-    than auto-approved or deferred. Because "deny" tops the safety-first
-    precedence, folding this in overrides any "allow"/"passthrough" the
-    carrying command would otherwise have yielded.  */
-const ENV_DENY: Decision = {
-    verdict: "deny",
-    reason:  "reference to a \".env\" secrets file is blocked"
-}
+/*  the basenames of conventional secret-carrying files: environment
+    secrets (".env"), machine credentials (".netrc"), registry auth tokens
+    (".npmrc"), cloud credentials ("~/.aws/credentials" etc.), and SSH
+    private keys ("id_rsa" and friends -- their ".pub" siblings are public
+    and deliberately NOT listed). Membership is tested against the
+    lowercased basename because the common desktop filesystems (APFS,
+    NTFS) are case-insensitive, so ".ENV" opens the very same file as
+    ".env" and must be caught alike.  */
+const SECRET_BASENAMES = new Set([
+    ".env", ".netrc", ".npmrc", "credentials",
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"
+])
 
-/*  decide whether a single literal path token refers to a ".env" file, i.e.
-    whether its final path component (basename) is exactly ".env". This
-    matches the bare name and any directory-qualified form ("./.env",
-    "config/.env", "/home/x/.env", "../.env"), while deliberately NOT
-    matching sibling names that merely share the prefix (".env.example",
-    ".env.local", ".envrc") or the suffix ("environment"). A trailing slash
-    is tolerated (its basename is still ".env"). The token must be a plain
-    literal already (callers only pass verified-literal words), so no
-    expansion can smuggle a ".env" path past this check unseen -- a
-    non-literal target instead trips the normal gating path elsewhere.  */
-const isEnvFileToken = (token: string): boolean => {
+/*  the catastrophic "deny" decision emitted for any reference to a secrets
+    file: such files conventionally carry secrets (API keys, passwords,
+    tokens, private keys), so reading or even referencing one is blocked
+    outright rather than auto-approved or deferred. Because "deny" tops the
+    safety-first precedence, folding this in overrides any "allow"/
+    "passthrough" the carrying command would otherwise have yielded.  */
+const secretDeny = (basename: string): Decision => ({
+    verdict: "deny",
+    reason:  `reference to a "${basename}" secrets file is blocked`
+})
+
+/*  decide whether a single literal path token refers to a secrets file,
+    i.e. whether its final path component (basename) is, case-insensitively,
+    a member of the secret basename set, returning the matched basename (as
+    written) or null. This matches the bare name and any directory-qualified
+    form ("./.env", "config/.env", "/home/x/.env", "../.env"), while
+    deliberately NOT matching sibling names that merely share the prefix
+    (".env.example", ".env.local", ".envrc", "id_rsa.pub") or the suffix
+    ("environment"). A trailing slash is tolerated (its basename is still
+    ".env"). The token must be a plain literal already (callers only pass
+    verified-literal words), so no expansion can smuggle a secrets path past
+    this check unseen -- a non-literal target instead trips the normal
+    gating path elsewhere.  */
+const secretFileToken = (token: string): string | null => {
     /*  strip any trailing slashes, then take the basename after the last "/"  */
     const trimmed  = token.replace(/\/+$/, "")
     const slash    = trimmed.lastIndexOf("/")
     const basename = slash >= 0 ? trimmed.slice(slash + 1) : trimmed
-    return basename === ".env"
+    return SECRET_BASENAMES.has(basename.toLowerCase()) ? basename : null
 }
 
 /*  decide whether any token in a literal argument vector references a
-    ".env" file (see "isEnvFileToken")  */
-const referencesEnvFile = (args: string[]): boolean =>
-    args.some((a) => isEnvFileToken(a))
+    secrets file (see "secretFileToken"), returning the first matched
+    basename or null  */
+const secretFileReference = (args: string[]): string | null => {
+    for (const arg of args) {
+        const hit = secretFileToken(arg)
+        if (hit !== null)
+            return hit
+    }
+    return null
+}
 
 /*  classify whether a redirect actually mutates the filesystem (and thus
     must trip the hard safety gate) or is benign for an otherwise-inert
@@ -617,12 +641,13 @@ class Walker {
     private walkRedirect (redirect: Redirect): void {
         if (redirectMutates(redirect))
             this.gate()
-        /*  a redirect whose literal target is a ".env" file ("cmd < .env",
-            "cmd > .env") is blocked outright, just like a ".env" argument  */
-        if (redirect.target !== undefined
-            && isLiteralWord(redirect.target)
-            && isEnvFileToken(redirect.target.value))
-            this.add(ENV_DENY)
+        /*  a redirect whose literal target is a secrets file ("cmd < .env",
+            "cmd > .env") is blocked outright, just like a secrets argument  */
+        if (redirect.target !== undefined && isLiteralWord(redirect.target)) {
+            const secret = secretFileToken(redirect.target.value)
+            if (secret !== null)
+                this.add(secretDeny(secret))
+        }
         if (redirect.target !== undefined)
             this.walkWord(redirect.target)
         if (redirect.body !== undefined)
@@ -805,14 +830,16 @@ class Walker {
         if (name === "")
             return
 
-        /*  a reference to a ".env" secrets file in any literal argument is
+        /*  a reference to a secrets file in any literal argument is
             blocked outright, independent of (and overriding) the command's
             own rule verdict: this catches "cat .env", "grep X .env",
-            "source .env", "xargs cat .env", etc. uniformly across every
-            command, and folds in "deny" which tops the safety-first
-            precedence so it wins over any "allow"/"passthrough"  */
-        if (referencesEnvFile(args))
-            this.add(ENV_DENY)
+            "source .env", "xargs cat .env", "cat ~/.ssh/id_rsa", etc.
+            uniformly across every command, and folds in "deny" which tops
+            the safety-first precedence so it wins over any
+            "allow"/"passthrough"  */
+        const secret = secretFileReference(args)
+        if (secret !== null)
+            this.add(secretDeny(secret))
 
         /*  classify the resolved leaf and fold in the decision, capping at
             "ask" when a privilege escalator wrapped this command  */
