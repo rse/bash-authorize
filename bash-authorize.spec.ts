@@ -77,6 +77,15 @@ describe("bash-authorize", () => {
             expectVerdict("git log --oneline", "allow")
             expectVerdict("git commit -m x", "passthrough")
         })
+        it("allows \"git tag\" only in explicit list mode", () => {
+            expectVerdict("git tag -l", "allow")
+            expectVerdict("git tag --list", "allow")
+            expectVerdict("git tag -l 'v*'", "allow")
+            expectVerdict("git -C /path/to/repo tag --list 0.9.54", "allow")
+            expectVerdict("git tag v1.0.0", "passthrough")
+            expectVerdict("git tag -d v1.0.0", "passthrough")
+            expectVerdict("git tag -a v1.0.0 -m msg", "passthrough")
+        })
         it("downgrades an inert command to passthrough on a denied flag", () => {
             expectVerdict("grep pattern file", "allow")
             expectVerdict("grep -r pattern .", "passthrough")
