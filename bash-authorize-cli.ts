@@ -7,7 +7,9 @@
 
 /*  built-in dependencies  */
 import process             from "node:process"
-import { readFileSync }    from "node:fs"
+import path                from "node:path"
+import { readFileSync,
+    realpathSync }         from "node:fs"
 import { fileURLToPath }   from "node:url"
 
 /*  external dependencies  */
@@ -16,7 +18,8 @@ import { execa }           from "execa"
 
 /*  internal dependencies  */
 import { classifyBash }    from "./bash-authorize-api.js"
-import type { Verdict }    from "./bash-authorize-api.js"
+import type { Verdict,
+    Context }              from "./bash-authorize-api.js"
 
 /*  internal package meta-information  */
 const pkg = JSON.parse(readFileSync(
@@ -32,8 +35,26 @@ const pluginRoot = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, 
     (only the fields this hook actually consumes are typed explicitly)  */
 interface HookEvent {
     hook_event_name?: string
+    session_id?:      string
     tool_name?:       string
     tool_input?:      { command?: string }
+}
+
+/*  determine the per-uid Claude Code temp directory, which (like Claude Code
+    itself) is "claude-<uid>" under "$CLAUDE_CODE_TMPDIR" or else "/tmp", in
+    both its lexical and its resolved spelling (e.g. "/private/tmp" on macOS)  */
+const claudeTempDirs = (): string[] => {
+    const dir  = path.join(process.env.CLAUDE_CODE_TMPDIR || "/tmp", `claude-${process.getuid?.() ?? 0}`)
+    const dirs = [ dir ]
+    try {
+        const real = realpathSync(dir)
+        if (real !== dir)
+            dirs.push(real)
+    }
+    catch (_e) {
+        /*  a not (yet) existing directory has only its lexical spelling  */
+    }
+    return dirs
 }
 
 /*  emit a fatal error and terminate the process. A hook crash must never
@@ -122,8 +143,8 @@ const opts = program.opts<{
     JSON for an active verdict, or stay silent (deferring to the normal
     permission flow) for "passthrough", always exiting 0 so a "deny" is
     carried by the JSON, not by the exit code  */
-const decide = (command: string): never => {
-    const decision = classifyBash(command)
+const decide = (command: string, ctx: Context): never => {
+    const decision = classifyBash(command, ctx)
 
     const permissionDecision = permissionDecisionOf(decision.verdict)
     if (permissionDecision !== undefined) {
@@ -144,8 +165,8 @@ const decide = (command: string): never => {
 /*  classify a command string supplied via "--command" and emit the resulting
     decision as a human-readable "Label: Value" list (verdict and reason) on
     stdout, then exit 0  */
-const report = (command: string): never => {
-    const decision = classifyBash(command)
+const report = (command: string, ctx: Context): never => {
+    const decision = classifyBash(command, ctx)
     const reason = decision.reason ?? "nothing matched / classification gated"
     process.stdout.write(`Verdict: ${decision.verdict}\n`)
     process.stdout.write(`Reason:  ${reason}\n`)
@@ -212,7 +233,7 @@ async function main (): Promise<void> {
     /*  direct mode: classify the command given on the command line and emit
         a human-readable "Label: Value" list  */
     if (opts.command !== undefined)
-        report(opts.command)
+        report(opts.command, { tempDirs: claudeTempDirs() })
 
     /*  hook mode: read the JSON event from stdin  */
     const input = await readStdin()
@@ -237,7 +258,12 @@ async function main (): Promise<void> {
         || typeof event.tool_input.command !== "string")
         process.exit(0)
 
-    decide(event.tool_input.command)
+    /*  classify under the Claude Code context, pinning the scratchpad
+        directory to the session of this hook event (if known)  */
+    decide(event.tool_input.command, {
+        tempDirs:  claudeTempDirs(),
+        sessionId: typeof event.session_id === "string" ? event.session_id : undefined
+    })
 }
 main().catch((error) => {
     const msg = error instanceof Error ? error.message : String(error)

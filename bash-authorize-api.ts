@@ -15,6 +15,14 @@ import type {
 /*  the per-command (and aggregate) verdicts  */
 export type Verdict = "allow" | "ask" | "deny" | "passthrough"
 
+/*  the optional classification context: the per-uid Claude Code temp
+    directories ("claude-<uid>" under "$CLAUDE_CODE_TMPDIR" or "/tmp", in
+    lexical and resolved spelling) and the current Claude Code session id  */
+export interface Context {
+    tempDirs?:  string[]
+    sessionId?: string
+}
+
 /*  an "allow" rule matches a genuinely-inert command by its name ("cmd")
     plus, optionally, every listed subcommand positional token ("subcommands",
     so "git status" matches "git status -s" but not "git push"). If any flag
@@ -25,19 +33,23 @@ export type Verdict = "allow" | "ask" | "deny" | "passthrough"
     by a flag but inside a program-text argument (e.g. an awk program
     containing "system(" or a "print >" file redirection). If an optional
     "argGuard" predicate is given, it receives the leaf's literal argument
-    vector and must return true for the leaf to stay "allow", else it is
-    downgraded -- this is used where simple substring matching is unreliable
+    vector (plus the context) and must return true for the rule to match,
+    else evaluation continues with the next rule (ultimately yielding the
+    "passthrough" default) -- this is used where substring matching is unreliable
     (e.g. a "sed" script whose terse one-letter "w"/"e" commands collide with
     substitution data and whose delimiter is freely chosen), so the guard
     instead owns the command's own argument grammar and allow-lists only a
-    verified-safe shape, rejecting everything else.  */
+    verified-safe shape, rejecting everything else. If "literalArgs" is set,
+    the rule matches only when the argument vector is complete, i.e. every
+    argument is a plain literal and no "xargs" appends further arguments.  */
 interface AllowRule {
     permission:     "allow"
     cmd:            string
     subcommands?:   string[]
     denyFlags?:     string[]
     denyArgSubstr?: string[]
-    argGuard?:      (args: string[]) => boolean
+    argGuard?:      (args: string[], ctx: Context) => boolean
+    literalArgs?:   boolean
     reason?:        string
 }
 
@@ -238,6 +250,48 @@ const wgetArgsAreSafe = (args: string[]): boolean => {
     return stdout
 }
 
+/*  validate an "rm" argument vector: every operand has to name an entry
+    *directly* under a Claude Code session scratchpad directory
+    ("<tempDir>/<project>/<session>/scratchpad/<entry>", where "<tempDir>"
+    is one of the per-uid temp directories of the context, "<project>" is
+    the sanitized working directory, and "<session>" is the context's
+    session id or else any UUID). The entry is a single path component (so
+    no traversal through a planted symlink is possible) drawn from a
+    conservative character set, where a "*"/"?" glob may only match entries
+    of that one directory: "."/".." and dot-leading globs (which could
+    match "..") are rejected, and so are bracket/brace globs and a trailing
+    slash. Flags are inert here. Without temp directories nothing matches.  */
+const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+const regexEscape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+const rmScratchpadArgsAreSafe = (args: string[], ctx: Context): boolean => {
+    const tempDirs = (ctx.tempDirs ?? [])
+        .map((dir) => dir.replace(/\/+$/, ""))
+        .filter((dir) => dir.startsWith("/"))
+    if (tempDirs.length === 0)
+        return false
+    const session = ctx.sessionId !== undefined ? regexEscape(ctx.sessionId) : UUID
+    const entryOf = new RegExp(`^(?:${tempDirs.map(regexEscape).join("|")})` +
+        `/[A-Za-z0-9-]+/${session}/scratchpad/([A-Za-z0-9 ._*?+=,:@%-]+)$`)
+    let operands = 0
+    let endOpts = false
+    for (const arg of args) {
+        if (!endOpts && arg === "--") {
+            endOpts = true
+            continue
+        }
+        if (!endOpts && arg.startsWith("-") && arg.length > 1)
+            continue
+        const match = entryOf.exec(arg)
+        if (match === null)
+            return false
+        const entry = match[1]
+        if (entry === "." || entry === ".." || (entry.startsWith(".") && /[*?]/.test(entry)))
+            return false
+        operands++
+    }
+    return operands > 0
+}
+
 /*  the ordered rule set: first match wins. "allow" rules enumerate a
     conservative, genuinely-inert command set; "risk" rules enumerate the
     known-dangerous ones (mostly "ask", with only a tiny catastrophic set
@@ -349,6 +403,8 @@ const RULES: Rule[] = [
             "--warc-file", "--config" ],
         argGuard: wgetArgsAreSafe,
         reason: "wget with an explicit stdout output document writes no files" },
+    {   permission: "allow", cmd: "rm", argGuard: rmScratchpadArgsAreSafe, literalArgs: true,
+        reason: "removal of entries directly under the Claude Code scratchpad directory is harmless" },
 
     /*  known-dangerous operations -> actively ask  */
     {   permission: "ask",   cmd: "rm", flags: [ "-r", "-f" ],
@@ -393,9 +449,10 @@ export interface Decision {
 }
 
 /*  classify a single resolved leaf command (its name plus literal argument
-    tokens) against the ordered rule set, returning the first match's
-    decision, or the "passthrough" default when nothing matches  */
-const classifyLeaf = (name: string, args: string[]): Decision => {
+    tokens, which are "complete" when no non-literal argument was dropped)
+    against the ordered rule set, returning the first match's decision, or
+    the "passthrough" default when nothing matches  */
+const classifyLeaf = (name: string, args: string[], complete: boolean, ctx: Context): Decision => {
     for (const rule of RULES) {
         if (rule.permission === "allow") {
             /*  allow rule: the command name plus every listed subcommand
@@ -404,6 +461,10 @@ const classifyLeaf = (name: string, args: string[]): Decision => {
                 continue
             if (rule.subcommands !== undefined
                 && !rule.subcommands.every((s) => args.includes(s)))
+                continue
+            if (rule.literalArgs === true && !complete)
+                continue
+            if (rule.argGuard !== undefined && !rule.argGuard(args, ctx))
                 continue
             if (rule.denyFlags !== undefined) {
                 const flags = flagSet(args)
@@ -415,8 +476,6 @@ const classifyLeaf = (name: string, args: string[]): Decision => {
                 if (args.some((a) => denyArgSubstr.some((s) => a.includes(s))))
                     return { verdict: "passthrough" }
             }
-            if (rule.argGuard !== undefined && !rule.argGuard(args))
-                return { verdict: "passthrough" }
             return { verdict: "allow", reason: rule.reason }
         }
         else {
@@ -603,6 +662,11 @@ interface Walk {
     parse error, thrown exception, or unmatched leaf fails safe.  */
 class Walker {
     private state: Walk = { verdict: "passthrough", gated: false }
+    private ctx: Context
+
+    constructor (ctx: Context = {}) {
+        this.ctx = ctx
+    }
 
     /*  trip a hard safety gate (downgrades any "allow" to "passthrough")  */
     private gate (): void {
@@ -622,7 +686,7 @@ class Walker {
         walk's own gate -- only a non-"allow" inner *verdict* propagates the
         gate, which is exactly the auto-approval condition.  */
     private subScriptGates (script: Script): boolean {
-        const inner = new Walker().classify(script)
+        const inner = new Walker(this.ctx).classify(script)
         this.add(inner)
         return inner.verdict !== "allow"
     }
@@ -802,9 +866,12 @@ class Walker {
             the trustworthy literal args at the first non-literal word  */
         let name = command.name.value
         const args: string[] = []
+        let complete = true
         for (const word of command.suffix) {
-            if (!isLiteralWord(word))
+            if (!isLiteralWord(word)) {
+                complete = false
                 break
+            }
             args.push(word.value)
         }
 
@@ -815,6 +882,11 @@ class Walker {
         while (WRAPPERS.has(name) || PRIVILEGE.has(name)) {
             if (PRIVILEGE.has(name))
                 privileged = true
+
+            /*  "xargs" appends further, unknown arguments  */
+            if (name === "xargs")
+                complete = false
+
             /*  drop the wrapper's own flags and any "VAR=val" arguments,
                 then take the next bare token as the inner command name  */
             let i = 0
@@ -846,7 +918,7 @@ class Walker {
 
         /*  classify the resolved leaf and fold in the decision, capping at
             "ask" when a privilege escalator wrapped this command  */
-        const decision = classifyLeaf(name, args)
+        const decision = classifyLeaf(name, args, complete, this.ctx)
         if (privileged && PRECEDENCE[decision.verdict] < PRECEDENCE["ask"])
             this.add({ verdict: "ask", reason: "privilege escalation requires confirmation" })
         else
@@ -1003,16 +1075,16 @@ class Walker {
 }
 
 /*  classify a raw "Bash" command string into an "allow"/"ask"/"deny"/
-    "passthrough" decision. The whole classification is fail-safe: any parse
-    error, thrown exception, or unmatched/unexpected construct yields
-    "passthrough" so the host agent's default prompt flow takes over.
-    Never crashes, never auto-approves on doubt.  */
-export const classifyBash = (command: string): Decision => {
+    "passthrough" decision, optionally under a context. The whole
+    classification is fail-safe: any parse error, thrown exception, or
+    unmatched/unexpected construct yields "passthrough" so the host agent's
+    default prompt flow takes over. Never crashes, never auto-approves on doubt.  */
+export const classifyBash = (command: string, ctx: Context = {}): Decision => {
     try {
         const script = parse(command)
         if (script.errors !== undefined && script.errors.length > 0)
             return { verdict: "passthrough" }
-        return new Walker().classify(script)
+        return new Walker(ctx).classify(script)
     }
     catch (_e) {
         /*  fail safe on any unexpected parser or walker error  */

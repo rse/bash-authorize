@@ -24,7 +24,11 @@ full command structure, and classifies it into one of four verdicts:
 - **allow** &mdash; the command is *genuinely inert* (read-only, no
   side-effects), so it is *auto-approved* without prompting the user
   (e.g. `ls`, `cat`, `grep`, `git status`, or `curl`/`wget` as long
-  as they stream to stdout and do not write any file).
+  as they stream to stdout and do not write any file). As a special
+  case, `rm` of entries directly under the *Claude Code* scratchpad
+  directory of the current session
+  (`${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>/<project>/<session>/scratchpad/*`)
+  is also auto-approved.
 
 - **ask** &mdash; the command is *known-dangerous* but legitimate, so a
   user confirmation *prompt is forced* (e.g. `rm -rf`, `git push`,

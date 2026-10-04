@@ -294,6 +294,51 @@ describe("bash-authorize", () => {
         })
     })
 
+    describe("the Claude Code scratchpad removal rule", () => {
+        const tempDirs  = [ "/tmp/claude-10000", "/private/tmp/claude-10000" ]
+        const sessionId = "156134c1-ced1-4055-bc70-90a8182f37d6"
+        const pad = `/private/tmp/claude-10000/-Users-rse-Work-node-bash-authorize/${sessionId}/scratchpad`
+        const expectCtx = (command: string, verdict: Verdict, withSession = true): void => {
+            const ctx = withSession ? { tempDirs, sessionId } : { tempDirs }
+            const decision = classifyBash(command, ctx)
+            assert.equal(decision.verdict, verdict,
+                `expected "${command}" to classify as "${verdict}" but got "${decision.verdict}"`)
+        }
+        it("auto-approves removal of entries directly under the scratchpad", () => {
+            expectCtx(`rm -rf ${pad}/*`, "allow")
+            expectCtx(`rm -rf ${pad}/probe.ts ${pad}/strings.txt`, "allow")
+            expectCtx(`rm -f -- ${pad}/x`, "allow")
+            expectCtx(`rm ${pad}/x`, "allow")
+            expectCtx(`rm -rf '${pad}/a b'`, "allow")
+            expectCtx(`rm -rf ${pad.replace(/^\/private/, "")}/x`, "allow")
+            expectCtx(`rm -rf /tmp/claude-10000/-Users-rse/${sessionId}/scratchpad/*`, "allow", false)
+        })
+        it("does not approve without a matching context", () => {
+            expectVerdict(`rm -rf ${pad}/*`, "ask")
+            expectCtx(`rm -rf ${pad.replace(sessionId, "b79139c6-e447-438f-bce5-be9d8031ecfc")}/*`, "ask")
+            expectCtx(`rm -rf ${pad.replace("10000", "0")}/*`, "ask")
+        })
+        it("does not approve the scratchpad itself, deeper paths, or traversals", () => {
+            expectCtx(`rm -rf ${pad}`, "ask")
+            expectCtx(`rm -rf ${pad}/`, "ask")
+            expectCtx(`rm -rf ${pad}/x/`, "ask")
+            expectCtx(`rm -rf ${pad}/x/y`, "ask")
+            expectCtx(`rm -rf ${pad}/..`, "ask")
+            expectCtx(`rm -rf ${pad}/.?`, "ask")
+            expectCtx(`rm -rf ${pad}/.*`, "ask")
+            expectCtx(`rm -rf ${pad}/[ab]`, "ask")
+            expectCtx(`rm -rf ${pad}/{a,..}`, "ask")
+            expectCtx("rm -rf /tmp/claude-10000/*/*/scratchpad/x", "ask", false)
+        })
+        it("does not approve when any other operand is outside the scratchpad", () => {
+            expectCtx(`rm -rf ${pad}/x build`, "ask")
+            expectCtx(`rm -rf ${pad}/x $HOME`, "ask")
+            expectCtx(`rm -rf ${pad}/x /`, "deny")
+            expectCtx(`xargs rm -rf ${pad}/x`, "ask")
+            expectCtx("rm -rf", "ask")
+        })
+    })
+
     describe("transparent wrappers", () => {
         it("unwraps to the inner command and classifies that", () => {
             expectVerdict("env FOO=bar ls", "allow")
